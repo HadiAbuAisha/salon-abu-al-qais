@@ -69,6 +69,31 @@ jobs:
             cp /tmp/barber-icon.png android/app/src/main/res/$d/ic_launcher_round.png
           done
 
+      - name: Create strong notification sound
+        run: |
+          mkdir -p android/app/src/main/res/raw
+          python3 - <<'PY'
+          import math, wave, struct
+          path='android/app/src/main/res/raw/salon_alert.wav'
+          rate=44100
+          pattern=[(880,.22),(660,.20),(880,.22),(990,.25),(660,.28),(880,.35)]
+          silence=.07
+          frames=[]
+          for freq,dur in pattern:
+              n=int(rate*dur)
+              for i in range(n):
+                  env=min(1,i/(rate*.01),max(0,(n-i)/(rate*.03)))
+                  s=0.90*env*math.sin(2*math.pi*freq*i/rate)
+                  s+=0.20*env*math.sin(2*math.pi*(freq*2)*i/rate)
+                  s=max(-1,min(1,s))
+                  frames.append(int(s*32767))
+              frames.extend([0]*int(rate*silence))
+          with wave.open(path,'w') as w:
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+              w.writeframes(b''.join(struct.pack('<h',x) for x in frames))
+          print(path)
+          PY
+
       - name: Build debug APK
         run: |
           chmod +x android/gradlew
