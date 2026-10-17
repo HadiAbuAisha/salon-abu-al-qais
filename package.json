@@ -1,7 +1,7 @@
 {
   "name": "salon-abu-al-qais",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/core": "^7.4.3",
+    "@capacitor/local-notifications": "^7.0.3",
     "@supabase/supabase-js": "^2.76.1",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
