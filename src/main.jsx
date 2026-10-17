@@ -1,13 +1,40 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createClient } from '@supabase/supabase-js';
-import { CalendarDays, Users, Scissors, WalletCards, LogOut, Plus, CheckCircle2, Clock3 } from 'lucide-react';
+import {
+  Bell, CalendarDays, CheckCircle2, Clock3, Crown, LogOut, Plus,
+  Scissors, Send, ShieldCheck, Sparkles, Users, WalletCards, XCircle
+} from 'lucide-react';
 import './styles.css';
 
-const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY);
-
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+);
+const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY || '';
 const money = (n) => `${Number(n || 0).toFixed(0)} ₪`;
 const fmt = (v) => v ? new Date(v).toLocaleString('ar-PS', { dateStyle: 'medium', timeStyle: 'short' }) : '';
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function showLocalNotification(title, body) {
+  if (!('serviceWorker' in navigator) || Notification.permission !== 'granted') return;
+  const reg = await navigator.serviceWorker.ready;
+  await reg.showNotification(title, {
+    body,
+    icon: '/barber-logo.svg',
+    badge: '/barber-logo.svg',
+    tag: 'salon-abu-al-qais',
+    vibrate: [250, 100, 250, 100, 650],
+    requireInteraction: true,
+    data: { url: '/' }
+  });
+}
 
 function App() {
   const [session, setSession] = useState(null);
@@ -15,9 +42,13 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
   const [tab, setTab] = useState('home');
+  const [notifications, setNotifications] = useState([]);
+  const [bellOpen, setBellOpen] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(Notification.permission === 'granted');
   const [data, setData] = useState({ services: [], appointments: [], customers: [], visits: [], users: [] });
 
   useEffect(() => {
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
@@ -28,12 +59,33 @@ function App() {
     loadProfile();
   }, [session?.user?.id]);
 
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    loadNotifications();
+    const channel = supabase
+      .channel(`salon-notifications-${session.user.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'salon_notifications',
+        filter: `user_id=eq.${session.user.id}`
+      }, (payload) => {
+        setNotifications(prev => [payload.new, ...prev]);
+        showLocalNotification(payload.new.title, payload.new.body).catch(() => {});
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [session?.user?.id]);
+
   async function loadProfile() {
     setLoading(true);
     const { data: p, error } = await supabase.from('app_profiles').select('*').eq('id', session.user.id).single();
     if (error) setNotice(error.message);
     setProfile(p || null);
     setLoading(false);
+  }
+
+  async function loadNotifications() {
+    const { data: rows } = await supabase.from('salon_notifications').select('*').order('created_at', { ascending: false }).limit(30);
+    setNotifications(rows || []);
   }
 
   async function refreshAll() {
@@ -58,22 +110,65 @@ function App() {
 
   useEffect(() => { refreshAll(); }, [profile?.id, profile?.role]);
 
-  if (loading) return <div className="center">جارِ التحميل...</div>;
+  async function enableNotifications() {
+    try {
+      if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+        setNotice('هذا المتصفح لا يدعم إشعارات الهاتف.'); return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') { setNotice('لم يتم السماح بالإشعارات.'); return; }
+      const reg = await navigator.serviceWorker.ready;
+      if (VAPID_PUBLIC_KEY && session?.user?.id) {
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
+        const j = sub.toJSON();
+        const { error } = await supabase.from('salon_push_subscriptions').upsert({
+          user_id: session.user.id,
+          endpoint: j.endpoint,
+          p256dh: j.keys?.p256dh,
+          auth: j.keys?.auth
+        }, { onConflict: 'endpoint' });
+        if (error) throw error;
+      }
+      setPushEnabled(true);
+      await showLocalNotification('صالون أبو القيس', 'تم تفعيل إشعارات الصالون بنجاح ✂️');
+      setNotice('تم تفعيل إشعارات الهاتف.');
+    } catch (e) { setNotice(e.message || 'تعذر تفعيل الإشعارات.'); }
+  }
+
+  async function markRead() {
+    const unread = notifications.filter(n => !n.read_at).map(n => n.id);
+    if (unread.length) await supabase.from('salon_notifications').update({ read_at: new Date().toISOString() }).in('id', unread);
+    setNotifications(prev => prev.map(n => ({ ...n, read_at: n.read_at || new Date().toISOString() })));
+  }
+
+  if (loading) return <div className="splash"><Logo/><div className="loaderLine"/><span>نجهز الكرسي...</span></div>;
   if (!session) return <Auth notice={notice} setNotice={setNotice} />;
-  if (!profile) return <div className="center">تعذر تحميل الملف الشخصي. أعد تسجيل الدخول.</div>;
+  if (!profile) return <div className="center">تعذر تحميل الحساب. أعد تسجيل الدخول.</div>;
 
   const admin = profile.role === 'admin';
   const totalSales = data.visits.reduce((s, v) => s + Number(v.total_amount || 0), 0);
   const paid = data.visits.reduce((s, v) => s + Number(v.paid_amount || 0), 0);
   const debt = totalSales - paid;
   const pending = data.appointments.filter(a => ['pending','scheduled'].includes(a.status)).length;
+  const unread = notifications.filter(n => !n.read_at).length;
 
   async function logout() { await supabase.auth.signOut(); }
 
   return <div className="app" dir="rtl">
     <header className="topbar">
-      <div><strong>صالون أبو القيس</strong><span>{admin ? 'لوحة الإدارة' : 'حساب الزبون'}</span></div>
-      <button className="ghost" onClick={logout}><LogOut size={18}/> خروج</button>
+      <div className="brandMini"><img src="/barber-logo.svg" alt="شعار صالون أبو القيس"/><div><strong>صالون أبو القيس</strong><span>{admin ? 'لوحة الحلاق' : 'حساب الزبون'}</span></div></div>
+      <div className="topActions">
+        {!pushEnabled && <button className="notifyEnable" onClick={enableNotifications}><Bell size={17}/> فعّل الإشعارات</button>}
+        <div className="bellWrap">
+          <button className="iconButton" onClick={()=>{setBellOpen(v=>!v); markRead();}}><Bell size={20}/>{unread>0&&<b>{unread}</b>}</button>
+          {bellOpen && <div className="notificationPanel">
+            <h3>الإشعارات</h3>
+            {notifications.length===0 ? <p>لا توجد إشعارات بعد.</p> : notifications.map(n=><article key={n.id}><strong>{n.title}</strong><span>{n.body}</span><small>{fmt(n.created_at)}</small></article>)}
+          </div>}
+        </div>
+        <button className="ghost" onClick={logout}><LogOut size={18}/><span>خروج</span></button>
+      </div>
     </header>
 
     <main className="shell">
@@ -81,16 +176,24 @@ function App() {
       <nav className="tabs">
         <Tab icon={<Scissors size={18}/>} active={tab==='home'} onClick={()=>setTab('home')}>الرئيسية</Tab>
         <Tab icon={<CalendarDays size={18}/>} active={tab==='appointments'} onClick={()=>setTab('appointments')}>المواعيد</Tab>
-        {admin && <><Tab icon={<Users size={18}/>} active={tab==='customers'} onClick={()=>setTab('customers')}>الزبائن</Tab><Tab icon={<WalletCards size={18}/>} active={tab==='visits'} onClick={()=>setTab('visits')}>الزيارات والديون</Tab><Tab icon={<Users size={18}/>} active={tab==='users'} onClick={()=>setTab('users')}>المستخدمون</Tab></>}
+        {admin && <><Tab icon={<Users size={18}/>} active={tab==='customers'} onClick={()=>setTab('customers')}>الزبائن</Tab><Tab icon={<WalletCards size={18}/>} active={tab==='visits'} onClick={()=>setTab('visits')}>الحسابات</Tab><Tab icon={<ShieldCheck size={18}/>} active={tab==='users'} onClick={()=>setTab('users')}>الصلاحيات</Tab></>}
       </nav>
 
       {tab==='home' && <section>
-        <div className="hero"><div><span>أهلاً بك</span><h1>{profile.display_name || profile.email}</h1><p>{admin ? 'إدارة الحجوزات والحسابات والزبائن من مكان واحد.' : 'احجز موعدك واختر الخدمة والوقت المناسب.'}</p></div><Scissors size={62}/></div>
-        <div className="stats">
-          <Stat label="المواعيد الحالية" value={pending} />
-          {admin && <><Stat label="إجمالي المبيعات" value={money(totalSales)} /><Stat label="المدفوع" value={money(paid)} /><Stat label="الديون" value={money(debt)} /></>}
+        <div className="hero premiumHero">
+          <div className="heroText">
+            <span className="eyebrow"><Sparkles size={15}/> تجربة صالون أذكى</span>
+            <h1>{admin ? `أهلاً بالحلاق، ${profile.display_name || ''}` : `أهلاً، ${profile.display_name || profile.email}`}</h1>
+            <p>{admin ? 'تابع دور الزبائن، الحسابات، والديون وأرسل تنبيه «تعال الآن» بضغطة واحدة.' : 'احجز دورك وتابع تنبيهات الحلاق مباشرة على هاتفك.'}</p>
+            <div className="heroBadges"><span><CheckCircle2 size={16}/> إدارة فورية</span><span><Bell size={16}/> تنبيهات هاتف</span>{admin&&<span><Crown size={16}/> مدير الصالون</span>}</div>
+          </div>
+          <div className="heroLogo"><Logo/></div>
         </div>
-        {!admin && <BookingForm services={data.services} user={session.user} profile={profile} onDone={()=>{setNotice('تم إرسال طلب الحجز'); refreshAll();}} setNotice={setNotice}/>} 
+        <div className="stats">
+          <Stat icon={<CalendarDays/>} label="مواعيد حالية" value={pending}/>
+          {admin && <><Stat icon={<WalletCards/>} label="إجمالي المبيعات" value={money(totalSales)}/><Stat icon={<CheckCircle2/>} label="المدفوع" value={money(paid)}/><Stat icon={<Clock3/>} label="الديون" value={money(debt)}/></>}
+        </div>
+        {!admin && <BookingForm services={data.services} user={session.user} profile={profile} onDone={()=>{setNotice('تم إرسال طلب الحجز للحلاق.'); refreshAll();}} setNotice={setNotice}/>} 
         {admin && <ServicesPanel services={data.services} refresh={refreshAll} setNotice={setNotice}/>} 
       </section>}
 
@@ -102,8 +205,10 @@ function App() {
   </div>;
 }
 
+function Logo(){return <div className="logoFrame"><img src="/barber-logo.svg" alt="صالون أبو القيس"/><i/><i/><i/></div>}
 function Tab({children, icon, active, onClick}) { return <button className={active?'tab active':'tab'} onClick={onClick}>{icon}{children}</button>; }
-function Stat({label,value}) { return <div className="stat"><span>{label}</span><strong>{value}</strong></div>; }
+function Stat({label,value,icon}) { return <div className="stat"><div className="statIcon">{icon}</div><span>{label}</span><strong>{value}</strong></div>; }
+function Empty(){return <div className="empty"><Scissors/><p>لا توجد بيانات هنا حاليًا.</p></div>}
 
 function Auth({notice,setNotice}) {
   const [mode,setMode]=useState('login'); const [busy,setBusy]=useState(false);
@@ -111,39 +216,62 @@ function Auth({notice,setNotice}) {
     const res = mode==='login' ? await supabase.auth.signInWithPassword({email,password}) : await supabase.auth.signUp({email,password,options:{data:{display_name:name}}});
     setBusy(false); if(res.error) setNotice(res.error.message); else if(mode==='register' && !res.data.session) setNotice('تم إنشاء الحساب. افتح بريدك لتأكيد الحساب ثم سجّل الدخول.');
   }
-  return <div className="authPage" dir="rtl"><section className="authBrand"><div className="mark">✂</div><h1>صالون أبو القيس</h1><p>حجز وإدارة احترافية للصالون</p></section><section className="authCard"><h2>{mode==='login'?'تسجيل الدخول':'إنشاء حساب'}</h2>{notice&&<div className="notice">{notice}</div>}<div className="switcher"><button className={mode==='login'?'on':''} onClick={()=>setMode('login')}>دخول</button><button className={mode==='register'?'on':''} onClick={()=>setMode('register')}>حساب جديد</button></div><form onSubmit={submit}>{mode==='register'&&<input name="name" placeholder="الاسم" required/>}<input name="email" type="email" placeholder="البريد الإلكتروني" required/><input name="password" type="password" minLength="6" placeholder="كلمة المرور" required/><button className="primary" disabled={busy}>{busy?'جارِ التنفيذ...':mode==='login'?'دخول':'إنشاء الحساب'}</button></form><small>أول حساب يتم إنشاؤه يصبح مدير الصالون تلقائيًا.</small></section></div>;
+  return <div className="authPage" dir="rtl">
+    <section className="authBrand">
+      <div className="floatingGlow one"/><div className="floatingGlow two"/>
+      <Logo/>
+      <span className="luxuryTag"><Sparkles size={15}/> BARBER EXPERIENCE</span>
+      <h1>صالون أبو القيس</h1><p>حلاقة، حجز، وتنظيم بشكل يليق بالصالون.</p>
+      <div className="barberPole"><span/></div>
+    </section>
+    <section className="authCard">
+      <div className="authTitle"><div className="miniScissor"><Scissors/></div><div><small>مرحباً بك</small><h2>{mode==='login'?'تسجيل الدخول':'إنشاء حساب'}</h2></div></div>
+      {notice&&<div className="notice">{notice}</div>}
+      <div className="switcher"><button className={mode==='login'?'on':''} onClick={()=>setMode('login')}>دخول</button><button className={mode==='register'?'on':''} onClick={()=>setMode('register')}>حساب جديد</button></div>
+      <form onSubmit={submit}>{mode==='register'&&<input name="name" placeholder="الاسم الكامل" required/>}<input name="email" type="email" placeholder="البريد الإلكتروني" required/><input name="password" type="password" minLength="6" placeholder="كلمة المرور" required/><button className="primary big" disabled={busy}>{busy?'جارِ التنفيذ...':mode==='login'?'دخول للصالون':'إنشاء الحساب'}</button></form>
+      <small className="authHint"><ShieldCheck size={15}/> أول حساب يتم إنشاؤه يصبح مدير الصالون تلقائيًا.</small>
+    </section>
+  </div>;
 }
 
 function BookingForm({services,user,profile,onDone,setNotice}){
   async function submit(e){e.preventDefault(); const f=new FormData(e.currentTarget); const {error}=await supabase.from('salon_appointments').insert({user_id:user.id,customer_name:profile.display_name||user.email,phone:f.get('phone'),service_name:f.get('service'),starts_at:new Date(f.get('starts')).toISOString(),notes:f.get('notes')}); if(error)setNotice(error.message); else {e.currentTarget.reset();onDone();}}
-  return <section className="card"><h2>احجز موعدًا جديدًا</h2><form className="gridForm" onSubmit={submit}><input name="phone" placeholder="رقم الجوال"/><select name="service" required><option value="">اختر الخدمة</option>{services.map(s=><option key={s.id} value={s.name}>{s.name} — {money(s.price)}</option>)}</select><input name="starts" type="datetime-local" required/><input name="notes" placeholder="ملاحظة اختيارية"/><button className="primary"><Plus size={18}/> إرسال الحجز</button></form></section>;
+  return <section className="card"><div className="sectionHeading"><div><small>حجز سريع</small><h2>احجز موعدًا جديدًا</h2></div><CalendarDays/></div><form className="gridForm" onSubmit={submit}><input name="phone" placeholder="رقم الجوال"/><select name="service" required><option value="">اختر الخدمة</option>{services.map(s=><option key={s.id} value={s.name}>{s.name} — {money(s.price)}</option>)}</select><input name="starts" type="datetime-local" required/><input name="notes" placeholder="ملاحظة اختيارية"/><button className="primary"><Plus size={18}/> إرسال الحجز</button></form></section>;
 }
 
 function Appointments({admin,items,refresh,setNotice}){
   async function status(id,status){const {error}=await supabase.from('salon_appointments').update({status}).eq('id',id); if(error)setNotice(error.message); else refresh();}
-  return <section className="card"><h2>المواعيد</h2><div className="list">{items.length===0&&<Empty/>}{items.map(a=><article className="row" key={a.id}><div><strong>{a.customer_name}</strong><span>{a.service_name}</span><small>{fmt(a.starts_at)} {a.phone?`• ${a.phone}`:''}</small></div><span className={'status '+a.status}>{a.status}</span>{admin&&<div className="actions"><button onClick={()=>status(a.id,'scheduled')}>تأكيد</button><button onClick={()=>status(a.id,'completed')}>مكتمل</button><button onClick={()=>status(a.id,'cancelled')}>إلغاء</button></div>}</article>)}</div></section>;
+  async function sendAlert(a, kind){
+    if(!a.user_id){setNotice('هذا الحجز غير مرتبط بحساب زبون.');return;}
+    const presets={now:['صالون أبو القيس','حان دورك ✂️ تعال الآن إلى الصالون.'],soon:['صالون أبو القيس','اقترب دورك ⏳ جهّز حالك وتوجّه للصالون.']};
+    const [title,body]=presets[kind];
+    const {error}=await supabase.from('salon_notifications').insert({user_id:a.user_id,appointment_id:a.id,title,body});
+    if(error){setNotice(error.message);return;}
+    try{await supabase.functions.invoke('send-salon-push',{body:{appointmentId:a.id,title,body}});}catch{}
+    setNotice(kind==='now'?'تم إرسال «تعال الآن» للزبون.':'تم إرسال «اقترب دورك» للزبون.');
+  }
+  const labels={pending:'بانتظار التأكيد',scheduled:'مؤكد',completed:'مكتمل',cancelled:'ملغي'};
+  return <section className="card"><div className="sectionHeading"><div><small>إدارة الدور</small><h2>المواعيد</h2></div><CalendarDays/></div><div className="list">{items.length===0&&<Empty/>}{items.map(a=><article className="row appointmentRow" key={a.id}><div className="person"><div className="avatar">{(a.customer_name||'?').slice(0,1)}</div><div><strong>{a.customer_name}</strong><span>{a.service_name}</span><small>{fmt(a.starts_at)} {a.phone?`• ${a.phone}`:''}</small></div></div><span className={'status '+a.status}>{labels[a.status]||a.status}</span>{admin&&<div className="actions"><button className="callNow" onClick={()=>sendAlert(a,'now')}><Send size={15}/> تعال الآن</button><button onClick={()=>sendAlert(a,'soon')}><Bell size={15}/> اقترب دورك</button><button onClick={()=>status(a.id,'scheduled')}>تأكيد</button><button onClick={()=>status(a.id,'completed')}>مكتمل</button><button className="danger" onClick={()=>status(a.id,'cancelled')}><XCircle size={15}/> إلغاء</button></div>}</article>)}</div></section>;
 }
 
 function Customers({items,refresh,setNotice}){
   async function submit(e){e.preventDefault();const f=new FormData(e.currentTarget);const {error}=await supabase.from('salon_customers').insert({name:f.get('name'),phone:f.get('phone'),notes:f.get('notes')});if(error)setNotice(error.message);else{e.currentTarget.reset();refresh();}}
-  return <section className="card"><h2>الزبائن</h2><form className="gridForm" onSubmit={submit}><input name="name" placeholder="اسم الزبون" required/><input name="phone" placeholder="رقم الهاتف"/><input name="notes" placeholder="ملاحظات"/><button className="primary"><Plus size={18}/> إضافة زبون</button></form><div className="list">{items.map(c=><article className="row" key={c.id}><div><strong>{c.name}</strong><span>{c.phone||'بدون رقم'}</span><small>{c.notes||''}</small></div></article>)}</div></section>;
+  return <section className="card"><div className="sectionHeading"><div><small>دفتر الصالون</small><h2>الزبائن</h2></div><Users/></div><form className="gridForm" onSubmit={submit}><input name="name" placeholder="اسم الزبون" required/><input name="phone" placeholder="رقم الهاتف"/><input name="notes" placeholder="ملاحظات"/><button className="primary"><Plus size={18}/> إضافة زبون</button></form><div className="list">{items.length===0&&<Empty/>}{items.map(c=><article className="row" key={c.id}><div className="person"><div className="avatar">{c.name.slice(0,1)}</div><div><strong>{c.name}</strong><span>{c.phone||'بدون رقم'}</span><small>{c.notes||''}</small></div></div></article>)}</div></section>;
 }
 
 function Visits({items,customers,refresh,setNotice}){
   async function submit(e){e.preventDefault();const f=new FormData(e.currentTarget);const customer=customers.find(c=>String(c.id)===String(f.get('customer')));const total=Number(f.get('total'));const paid=Number(f.get('paid'));const {error}=await supabase.from('salon_visits').insert({customer_id:customer?.id||null,customer_name:customer?.name||f.get('name'),service_name:f.get('service'),total_amount:total,paid_amount:paid,notes:f.get('notes')});if(error)setNotice(error.message);else{e.currentTarget.reset();refresh();}}
-  return <section className="card"><h2>الزيارات والديون</h2><form className="gridForm" onSubmit={submit}><select name="customer"><option value="">زبون غير مسجل</option>{customers.map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select><input name="name" placeholder="اسم الزبون إذا غير مسجل"/><input name="service" placeholder="الخدمة" required/><input name="total" type="number" min="0" step="0.01" placeholder="الإجمالي" required/><input name="paid" type="number" min="0" step="0.01" placeholder="المدفوع" required/><input name="notes" placeholder="ملاحظات"/><button className="primary"><Plus size={18}/> تسجيل زيارة</button></form><div className="list">{items.map(v=><article className="row" key={v.id}><div><strong>{v.customer_name}</strong><span>{v.service_name}</span><small>{fmt(v.visited_at)}</small></div><div className="money"><b>{money(v.total_amount)}</b><small>مدفوع {money(v.paid_amount)} • دين {money(Number(v.total_amount)-Number(v.paid_amount))}</small></div></article>)}</div></section>;
+  return <section className="card"><div className="sectionHeading"><div><small>المبيعات والديون</small><h2>الحسابات</h2></div><WalletCards/></div><form className="gridForm" onSubmit={submit}><select name="customer"><option value="">زبون غير مسجل</option>{customers.map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select><input name="name" placeholder="اسم الزبون إذا غير مسجل"/><input name="service" placeholder="الخدمة" required/><input name="total" type="number" min="0" step="0.01" placeholder="الإجمالي" required/><input name="paid" type="number" min="0" step="0.01" placeholder="المدفوع" required/><input name="notes" placeholder="ملاحظات"/><button className="primary"><Plus size={18}/> تسجيل زيارة</button></form><div className="list">{items.length===0&&<Empty/>}{items.map(v=><article className="row" key={v.id}><div><strong>{v.customer_name}</strong><span>{v.service_name}</span><small>{fmt(v.visited_at)}</small></div><div className="money"><b>{money(v.total_amount)}</b><small>مدفوع {money(v.paid_amount)} • دين {money(Number(v.total_amount)-Number(v.paid_amount))}</small></div></article>)}</div></section>;
 }
 
 function ServicesPanel({services,refresh,setNotice}){
-  async function submit(e){e.preventDefault();const f=new FormData(e.currentTarget);const {error}=await supabase.from('salon_services').insert({name:f.get('name'),price:Number(f.get('price')),duration_minutes:Number(f.get('duration'))});if(error)setNotice(error.message);else{e.currentTarget.reset();refresh();}}
-  return <section className="card"><h2>الخدمات والأسعار</h2><form className="gridForm compact" onSubmit={submit}><input name="name" placeholder="اسم الخدمة" required/><input name="price" type="number" min="0" placeholder="السعر" required/><input name="duration" type="number" min="5" value="30" onChange={()=>{}} hidden/><button className="primary"><Plus size={18}/> إضافة خدمة</button></form><div className="chips">{services.map(s=><span key={s.id}>{s.name} <b>{money(s.price)}</b></span>)}</div></section>;
+  async function submit(e){e.preventDefault();const f=new FormData(e.currentTarget);const {error}=await supabase.from('salon_services').insert({name:f.get('name'),price:Number(f.get('price')),duration_minutes:30});if(error)setNotice(error.message);else{e.currentTarget.reset();refresh();}}
+  return <section className="card servicesCard"><div className="sectionHeading"><div><small>قائمة الأسعار</small><h2>الخدمات</h2></div><Scissors/></div><form className="gridForm compact" onSubmit={submit}><input name="name" placeholder="اسم الخدمة" required/><input name="price" type="number" min="0" placeholder="السعر" required/><button className="primary"><Plus size={18}/> إضافة خدمة</button></form><div className="chips">{services.map(s=><span key={s.id}>{s.name}<b>{money(s.price)}</b></span>)}</div></section>;
 }
 
 function UsersPanel({items,currentUserId,refresh,setNotice}){
-  async function toggle(u){const role=u.role==='admin'?'user':'admin';const {error}=await supabase.from('app_profiles').update({role}).eq('id',u.id);if(error)setNotice(error.message);else refresh();}
-  return <section className="card"><h2>المستخدمون والصلاحيات</h2><div className="list">{items.map(u=><article className="row" key={u.id}><div><strong>{u.display_name||u.email}</strong><span>{u.email}</span></div><div className="actions"><span className={'status '+u.role}>{u.role==='admin'?'مدير':'مستخدم'}</span>{u.id!==currentUserId&&<button onClick={()=>toggle(u)}>{u.role==='admin'?'إزالة الإدارة':'جعله مديرًا'}</button>}</div></article>)}</div></section>;
+  async function toggle(u){if(u.id===currentUserId&&u.role==='admin'){setNotice('لا تغيّر صلاحية حسابك الإداري من هنا.');return;}const role=u.role==='admin'?'user':'admin';const {error}=await supabase.from('app_profiles').update({role}).eq('id',u.id);if(error)setNotice(error.message);else refresh();}
+  return <section className="card"><div className="sectionHeading"><div><small>الصلاحيات</small><h2>المستخدمون</h2></div><ShieldCheck/></div><div className="list">{items.map(u=><article className="row" key={u.id}><div className="person"><div className="avatar">{(u.display_name||u.email||'?').slice(0,1)}</div><div><strong>{u.display_name||u.email}</strong><span>{u.email}</span></div></div><button className={u.role==='admin'?'role adminRole':'role'} onClick={()=>toggle(u)}>{u.role==='admin'?<><Crown size={15}/> مدير</>:<>زبون</>}</button></article>)}</div></section>;
 }
-
-function Empty(){return <div className="empty"><Clock3 size={28}/><span>لا توجد بيانات حتى الآن</span></div>}
 
 createRoot(document.getElementById('root')).render(<App/>);
