@@ -38,11 +38,16 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Install icon renderer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin
+
       - name: Install web dependencies
         run: npm install
 
-      - name: Install Capacitor
-        run: npm install --no-save @capacitor/core @capacitor/android @capacitor/cli
+      - name: Install Capacitor Android tools
+        run: npm install --no-save @capacitor/android @capacitor/cli
 
       - name: Build web app
         run: npm run build
@@ -52,6 +57,17 @@ jobs:
 
       - name: Sync Android
         run: npx cap sync android
+
+      - name: Apply BARBERIA launcher icon
+        run: |
+          rsvg-convert public/barber-logo.svg -w 512 -h 512 -o /tmp/barber-icon.png
+          rm -f android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+          find android/app/src/main/res -type f \( -name 'ic_launcher.webp' -o -name 'ic_launcher_round.webp' -o -name 'ic_launcher.png' -o -name 'ic_launcher_round.png' \) -delete
+          for d in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+            mkdir -p android/app/src/main/res/$d
+            cp /tmp/barber-icon.png android/app/src/main/res/$d/ic_launcher.png
+            cp /tmp/barber-icon.png android/app/src/main/res/$d/ic_launcher_round.png
+          done
 
       - name: Build debug APK
         run: |
