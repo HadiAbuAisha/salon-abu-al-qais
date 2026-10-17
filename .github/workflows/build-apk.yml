@@ -1,0 +1,65 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'package.json'
+      - 'vite.config.*'
+      - 'index.html'
+      - 'capacitor.config.json'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VITE_SUPABASE_URL: https://crwmeepwzaoqhafvwkej.supabase.co
+      VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_uBezuk6ILeTpu0ACE-mi_g_wScvJeUp
+      VITE_VAPID_PUBLIC_KEY: BBeui_BFmdNRMxzYcqrrnQxo3LP1ts5rc3YZ6brELVVG_glB78Ggj412oYFkQeJ3k7_QiiyxOIPul1BxcyHeexQ
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm install
+
+      - name: Install Capacitor
+        run: npm install --no-save @capacitor/core @capacitor/android @capacitor/cli
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Create Android project
+        run: npx cap add android
+
+      - name: Sync Android
+        run: npx cap sync android
+
+      - name: Build debug APK
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk salon-abu-al-qais.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: salon-abu-al-qais-apk
+          path: salon-abu-al-qais.apk
+          retention-days: 30
