@@ -1,6 +1,8 @@
 import { Capacitor } from '@capacitor/core';
 
 let ready = false;
+const CHANNEL_ID = 'salon-alerts-v2';
+const SOUND_FILE = 'salon_alert.wav';
 
 export function isNativeApp(){ return Capacitor.isNativePlatform(); }
 
@@ -11,14 +13,14 @@ export async function initNativeNotifications(){
     const perm = await LocalNotifications.requestPermissions();
     if(perm.display !== 'granted') return false;
     await LocalNotifications.createChannel({
-      id:'salon-alerts',
+      id: CHANNEL_ID,
       name:'إشعارات صالون أبو القيس',
-      description:'تنبيهات الحجوزات والدور',
+      description:'تنبيهات الحجوزات والدور بصوت قوي',
       importance:5,
       visibility:1,
       vibration:true,
       lights:true,
-      sound:'default'
+      sound:SOUND_FILE
     });
     ready = true;
     return true;
@@ -34,8 +36,8 @@ export async function showNativeNotification(title,body){
       id: Math.floor(Date.now()%2147483647),
       title: title || 'صالون أبو القيس',
       body: body || 'لديك إشعار جديد من الصالون',
-      channelId:'salon-alerts',
-      sound:'default',
+      channelId: CHANNEL_ID,
+      sound:SOUND_FILE,
       ongoing:false,
       autoCancel:true,
       extra:{url:'/'}
