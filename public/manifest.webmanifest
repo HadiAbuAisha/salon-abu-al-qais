@@ -1,0 +1,20 @@
+{
+  "name": "صالون أبو القيس",
+  "short_name": "أبو القيس",
+  "description": "إدارة حجوزات صالون أبو القيس وتنبيهات الدور",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0c0f",
+  "theme_color": "#0b0c0f",
+  "icons": [
+    {
+      "src": "/barber-logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
