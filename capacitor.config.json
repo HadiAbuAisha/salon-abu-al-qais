@@ -1,0 +1,8 @@
+{
+  "appId": "com.abualqais.salon",
+  "appName": "صالون أبو القيس",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false
+  }
+}
