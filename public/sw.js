@@ -1,16 +1,24 @@
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data?.text() || '' }; }
+
   const title = data.title || 'صالون أبو القيس';
   const options = {
     body: data.body || 'لديك إشعار جديد من الصالون',
     icon: '/barber-logo.svg',
     badge: '/barber-logo.svg',
-    tag: data.tag || 'salon-abu-al-qais',
-    vibrate: [300, 120, 300, 120, 800],
+    tag: data.tag || `salon-${Date.now()}`,
+    renotify: true,
+    silent: false,
+    vibrate: [650, 140, 650, 140, 1200, 180, 850, 160, 650],
     requireInteraction: true,
-    data: { url: data.url || '/' }
+    timestamp: Date.now(),
+    data: { url: data.url || '/' },
+    actions: [
+      { action: 'open', title: 'فتح التطبيق' }
+    ]
   };
+
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
